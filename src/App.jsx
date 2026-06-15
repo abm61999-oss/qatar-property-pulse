@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import realListings from "./listings.json";
 
 // ─── DESIGN TOKENS ───────────────────────────────────────────────
 const T = {
@@ -16,69 +17,29 @@ const T = {
   textMuted: "#8FA3B3",
 };
 
-// ─── MOCK DATA GENERATORS (simulating real API responses) ─────────
-// In production: replace fetchBayut, fetchPropertyFinder, fetchQCB
-// with real API calls using your RapidAPI key / Apify token / QCB endpoint.
-
-const AREAS = ["The Pearl", "Lusail", "West Bay", "Al Sadd", "Msheireb", "Al Wakrah", "Al Khor", "Ain Khaled"];
-const TYPES = ["Apartment", "Villa", "Penthouse", "Studio", "Townhouse", "Office"];
-const PURPOSES = ["For Sale", "For Rent"];
+// ─── FILTER OPTIONS (derived from the real listings) ──────────────
+// AREAS and TYPES come straight from src/listings.json so the dropdowns
+// always match whatever the latest scrape actually contains.
+const AREAS = [...new Set(realListings.map(l => l.area).filter(Boolean))].sort();
+const TYPES = [...new Set(realListings.map(l => l.type).filter(Boolean))].sort();
+const PURPOSES = ["For Sale"];
 
 function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
-function randF(min, max) { return +(Math.random() * (max - min) + min).toFixed(0); }
-function pick(arr) { return arr[rand(0, arr.length - 1)]; }
 
-function generateListings(source, count) {
-  return Array.from({ length: count }, (_, i) => {
-    const purpose = pick(PURPOSES);
-    const type = pick(TYPES);
-    const area = pick(AREAS);
-    const beds = type === "Studio" ? 0 : rand(1, 5);
-    const size = rand(50, 500);
-    const basePrice = purpose === "For Sale"
-      ? size * rand(8000, 22000)
-      : size * rand(80, 200);
-    return {
-      id: `${source}-${i}`,
-      source,
-      title: `${beds > 0 ? beds + "BR " : ""}${type} in ${area}`,
-      type, area, beds, baths: beds > 0 ? rand(1, beds + 1) : 1,
-      size, purpose,
-      price: basePrice,
-      pricePerSqm: Math.round(basePrice / size),
-      furnished: Math.random() > 0.5,
-      verified: Math.random() > 0.3,
-      listedDate: new Date(Date.now() - rand(0, 30) * 86400000).toLocaleDateString("en-QA"),
-      agent: `Agent ${rand(100, 999)}`,
-      img: `https://picsum.photos/seed/${source}${i}/400/250`,
-    };
-  });
-}
-
-// ─── SIMULATED API FETCHERS ───────────────────────────────────────
-// Replace these with real fetch() calls to your APIs:
-//
-// BAYUT (RapidAPI):
-//   const res = await fetch("https://bayut14.p.rapidapi.com/search-property?purpose=for-sale&page=1", {
-//     headers: { "x-rapidapi-key": YOUR_KEY, "x-rapidapi-host": "bayut14.p.rapidapi.com" }
-//   });
-//
-// PROPERTYFINDER (Apify):
-//   const res = await fetch(`https://api.apify.com/v2/acts/dhrumil~propertyfinder-scraper/runs`, {
-//     method: "POST", headers: { Authorization: `Bearer ${YOUR_TOKEN}` },
-//     body: JSON.stringify({ startUrls: [{ url: "https://www.propertyfinder.qa/en/search?..." }] })
-//   });
-//
-// QCB (Qatar Central Bank) - price index:
-//   const res = await fetch("https://www.qcb.gov.qa/api/realestate/index");  // check actual endpoint
+// ─── REAL DATA SOURCE ─────────────────────────────────────────────
+// Listings in src/listings.json are scraped from propertyfinder.qa (real Qatar
+// for-sale properties with real photos, prices, sizes and locations).
+// Refresh them anytime by running:  node scrape.mjs
+// QCB macro figures below remain illustrative until a live QCB feed is wired in.
 
 async function fetchBayut() {
-  await new Promise(r => setTimeout(r, 800));
-  return generateListings("Bayut", 40);
+  // Real listings come through the PropertyFinder fetcher; nothing extra here.
+  await new Promise(r => setTimeout(r, 300));
+  return [];
 }
 async function fetchPropertyFinder() {
-  await new Promise(r => setTimeout(r, 1200));
-  return generateListings("PropertyFinder", 50);
+  await new Promise(r => setTimeout(r, 400));
+  return realListings;
 }
 async function fetchQCB() {
   await new Promise(r => setTimeout(r, 600));
@@ -144,10 +105,12 @@ function PulseBar({ pct, color }) {
 function ListingCard({ listing }) {
   const srcColor = listing.source === "Bayut" ? T.sand : T.teal;
   return (
-    <div style={{
-      background: T.navyMid, borderRadius:10, overflow:"hidden",
-      display:"flex", flexDirection:"column", transition:"transform 0.15s",
-    }}
+    <a href={listing.url || undefined} target="_blank" rel="noopener noreferrer"
+      style={{
+        background: T.navyMid, borderRadius:10, overflow:"hidden", textDecoration:"none",
+        display:"flex", flexDirection:"column", transition:"transform 0.15s",
+        cursor: listing.url ? "pointer" : "default",
+      }}
       onMouseEnter={e => e.currentTarget.style.transform="translateY(-3px)"}
       onMouseLeave={e => e.currentTarget.style.transform="translateY(0)"}
     >
@@ -180,7 +143,7 @@ function ListingCard({ listing }) {
           QAR {listing.pricePerSqm.toLocaleString()}/m² · Listed {listing.listedDate}
         </div>
       </div>
-    </div>
+    </a>
   );
 }
 
@@ -249,16 +212,22 @@ export default function App() {
   const [listings, setListings] = useState([]);
   const [qcb, setQcb] = useState(null);
   const [loading, setLoading] = useState({ bayut: true, pf: true, qcb: true });
-  const [filters, setFilters] = useState({ area:"All", purpose:"All", type:"All", source:"All", maxPrice:"" });
+  const [filters, setFilters] = useState({ area:"All", purpose:"For Sale", type:"Land", source:"All", maxPrice:"" });
   const [sort, setSort] = useState("price-asc");
 
   useEffect(() => {
+    // Merge by id so React StrictMode's double-invoke (and overlapping sources) can't duplicate rows.
+    const merge = (prev, data) => {
+      const map = new Map(prev.map(l => [l.id, l]));
+      for (const l of data) map.set(l.id, l);
+      return [...map.values()];
+    };
     fetchBayut().then(data => {
-      setListings(prev => [...prev, ...data]);
+      setListings(prev => merge(prev, data));
       setLoading(l => ({ ...l, bayut: false }));
     });
     fetchPropertyFinder().then(data => {
-      setListings(prev => [...prev, ...data]);
+      setListings(prev => merge(prev, data));
       setLoading(l => ({ ...l, pf: false }));
     });
     fetchQCB().then(data => {
@@ -273,7 +242,7 @@ export default function App() {
     if (filters.type !== "All" && l.type !== filters.type) return false;
     if (filters.source !== "All" && l.source !== filters.source) return false;
     if (filters.maxPrice && l.price > Number(filters.maxPrice)) return false;
-    return true;
+return true;
   }).sort((a, b) => {
     if (sort === "price-asc") return a.price - b.price;
     if (sort === "price-desc") return b.price - a.price;
